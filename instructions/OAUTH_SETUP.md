@@ -38,7 +38,7 @@
    - Authorized redirect URIs:
      ```
      http://localhost:3000/integrations/google/callback
-     https://your-domain.com/integrations/google/callback
+     https://corben.pro/integrations/google/callback
      ```
    - Create
 
@@ -111,7 +111,7 @@ async def exchange_google_code(code: str) -> dict:
 
 3. **Добавь redirect URIs**
    - Authentication → Add URI
-   - Добавь production URL: `https://your-domain.com/integrations/outlook/callback`
+   - Добавь production URL: `https://corben.pro/integrations/outlook/callback`
 
 4. **Создай client secret**
    - Certificates & secrets → New client secret
@@ -193,7 +193,7 @@ https://graph.microsoft.com/v1.0
    - Redirect URIs:
      ```
      http://localhost:3000/integrations/notion/callback
-     https://your-domain.com/integrations/notion/callback
+     https://corben.pro/integrations/notion/callback
      ```
 
 4. **Скопируй credentials**

@@ -191,9 +191,9 @@ Bot: 📅 Созвон с юристом
 | Database | PostgreSQL | Reliable, good for relational data |
 | Cache/Queue | Redis + arq | Lightweight, good for background jobs |
 | AI - Speech | OpenAI Whisper API | Best quality for voice recognition |
-| AI - Parsing | OpenAI GPT-4o-mini | Cheap, fast, smart enough for parsing |
-| Hosting | VPS (Netherlands) | Already available, good for MVP |
-| Containers | Docker + docker-compose | Simple for MVP, K8s later |
+| AI - Parsing | OpenAI GPT-5-mini | Cheap ($0.25/1M input), fast, smart enough for parsing |
+| Hosting | VPS (Netherlands) + domain corben.pro | Already available, SSL required for Telegram Widget |
+| Containers | Docker + docker-compose | Simple for MVP, auto port selection |
 
 ### 2.2 Architecture Overview
 
