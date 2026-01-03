@@ -114,15 +114,54 @@ EOF
 install_dependencies() {
     log STEP "Installing missing dependencies..."
 
-    # Update package list
-    apt-get update -qq
+    # Update package list (ignore GPG errors from third-party repos)
+    apt-get update -qq 2>/dev/null || true
 
-    # Install all required packages
-    apt-get install -y docker.io docker-compose nginx certbot python3-certbot-nginx git openssl curl 2>&1 | tee -a "$LOG_FILE"
+    # Install basic packages first (not docker - it may already be installed differently)
+    apt-get install -y nginx certbot python3-certbot-nginx git openssl curl 2>&1 | tee -a "$LOG_FILE" || true
 
-    # Start and enable Docker
-    systemctl start docker 2>/dev/null || true
-    systemctl enable docker 2>/dev/null || true
+    # Check if Docker is already installed and working
+    if command -v docker &> /dev/null && docker info &> /dev/null; then
+        log INFO "Docker already installed and running"
+    else
+        # Try to install Docker
+        if ! command -v docker &> /dev/null; then
+            log STEP "Installing Docker..."
+            # Try official Docker repo first, fallback to docker.io
+            curl -fsSL https://get.docker.com | sh 2>&1 | tee -a "$LOG_FILE" || \
+                apt-get install -y docker.io 2>&1 | tee -a "$LOG_FILE" || true
+        fi
+        # Start Docker
+        systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
+        systemctl enable docker 2>/dev/null || true
+    fi
+
+    # Install docker-compose (try multiple methods)
+    if ! command -v docker-compose &> /dev/null; then
+        log STEP "Installing docker-compose..."
+
+        # Method 1: Try docker-compose-plugin (Docker Compose V2)
+        if apt-get install -y docker-compose-plugin 2>/dev/null; then
+            # Create wrapper script for docker-compose command
+            if [ ! -f /usr/local/bin/docker-compose ]; then
+                echo '#!/bin/bash' > /usr/local/bin/docker-compose
+                echo 'docker compose "$@"' >> /usr/local/bin/docker-compose
+                chmod +x /usr/local/bin/docker-compose
+            fi
+            log INFO "Installed docker-compose-plugin (V2)"
+        # Method 2: Try apt package
+        elif apt-get install -y docker-compose 2>/dev/null; then
+            log INFO "Installed docker-compose from apt"
+        # Method 3: Download binary directly
+        else
+            log STEP "Downloading docker-compose binary..."
+            COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+            COMPOSE_VERSION=${COMPOSE_VERSION:-v2.24.0}
+            curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose 2>&1 | tee -a "$LOG_FILE"
+            chmod +x /usr/local/bin/docker-compose
+            log INFO "Installed docker-compose ${COMPOSE_VERSION}"
+        fi
+    fi
 
     log INFO "Dependencies installed"
 }
