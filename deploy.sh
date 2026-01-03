@@ -111,34 +111,65 @@ EOF
 
 # ============= Dependency Checks =============
 
+install_dependencies() {
+    log STEP "Installing missing dependencies..."
+
+    # Update package list
+    apt-get update -qq
+
+    # Install all required packages
+    apt-get install -y docker.io docker-compose nginx certbot python3-certbot-nginx git openssl curl 2>&1 | tee -a "$LOG_FILE"
+
+    # Start and enable Docker
+    systemctl start docker 2>/dev/null || true
+    systemctl enable docker 2>/dev/null || true
+
+    log INFO "Dependencies installed"
+}
+
 check_dependencies() {
     log STEP "[1/9] Checking dependencies..."
+
+    # Check if running as root first
+    if [ "$EUID" -ne 0 ]; then
+        log ERROR "Please run as root (sudo)"
+        exit 1
+    fi
 
     local missing=()
 
     # Check required commands
-    for cmd in docker docker-compose nginx certbot git openssl; do
+    for cmd in docker docker-compose nginx certbot git openssl curl; do
         if ! command -v $cmd &> /dev/null; then
             missing+=($cmd)
         fi
     done
 
+    # Auto-install if missing
     if [ ${#missing[@]} -gt 0 ]; then
-        log ERROR "Missing dependencies: ${missing[*]}"
-        log INFO "Install with: apt-get install -y docker.io docker-compose nginx certbot python3-certbot-nginx git"
-        exit 1
+        log WARN "Missing dependencies: ${missing[*]}"
+        log STEP "Auto-installing dependencies..."
+        install_dependencies
+
+        # Re-check after installation
+        for cmd in docker docker-compose nginx certbot git openssl; do
+            if ! command -v $cmd &> /dev/null; then
+                log ERROR "Failed to install: $cmd"
+                exit 1
+            fi
+        done
     fi
 
     # Check Docker is running
     if ! docker info &> /dev/null; then
-        log ERROR "Docker is not running"
-        exit 1
-    fi
+        log WARN "Docker is not running, starting..."
+        systemctl start docker 2>/dev/null || service docker start 2>/dev/null || true
+        sleep 3
 
-    # Check if running as root
-    if [ "$EUID" -ne 0 ]; then
-        log ERROR "Please run as root (sudo)"
-        exit 1
+        if ! docker info &> /dev/null; then
+            log ERROR "Failed to start Docker"
+            exit 1
+        fi
     fi
 
     log INFO "All dependencies satisfied"
