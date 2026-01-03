@@ -83,9 +83,18 @@ parse_args() {
 
 show_help() {
     cat << EOF
-Usage: $0 [OPTIONS]
+Usage: $0 [COMMAND] [OPTIONS]
 
 Telegram AI Business Assistant Deployment Script
+
+COMMANDS:
+    deploy              Full deployment (default)
+    update [SERVICE]    Update specific service without full rebuild
+    restart [SERVICE]   Restart specific service
+    logs [SERVICE]      Show logs for service
+    status              Show status of all services
+
+SERVICES: api, bot, web, worker, postgres, redis
 
 OPTIONS:
     --domain=DOMAIN         Domain name (default: corben.pro)
@@ -96,12 +105,23 @@ OPTIONS:
     --help, -h              Show this help message
 
 EXAMPLES:
-    # Non-interactive deployment
-    sudo bash deploy.sh \\
-        --domain=corben.pro \\
-        --email=admin@corben.pro \\
-        --telegram-token=YOUR_TOKEN \\
-        --openai-key=YOUR_KEY
+    # Full deployment
+    sudo bash deploy.sh deploy --domain=corben.pro
+
+    # Update only API service
+    sudo bash deploy.sh update api
+
+    # Update only Web frontend
+    sudo bash deploy.sh update web
+
+    # Update only Bot service
+    sudo bash deploy.sh update bot
+
+    # Restart service without rebuild
+    sudo bash deploy.sh restart api
+
+    # View logs
+    sudo bash deploy.sh logs bot
 
     # Interactive deployment
     sudo bash deploy.sh --interactive
@@ -831,6 +851,122 @@ rollback() {
     log INFO "Rollback complete"
 }
 
+# ============= Modular Update Commands =============
+
+update_service() {
+    local service=$1
+
+    if [ -z "$service" ]; then
+        log ERROR "Please specify a service: api, bot, web, worker"
+        exit 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    # Load environment
+    if [ -f ".env" ]; then
+        set -a
+        source .env
+        set +a
+    fi
+
+    case $service in
+        api)
+            log STEP "Updating API service..."
+            docker-compose build --no-cache api
+            docker-compose up -d --no-deps api
+            log INFO "API updated successfully"
+            ;;
+        bot)
+            log STEP "Updating Bot service..."
+            docker-compose build --no-cache bot
+            docker-compose up -d --no-deps bot
+            log INFO "Bot updated successfully"
+            ;;
+        web)
+            log STEP "Updating Web frontend..."
+            docker-compose build --no-cache web
+            docker-compose up -d --no-deps web
+            log INFO "Web updated successfully"
+            ;;
+        worker)
+            log STEP "Updating Worker service..."
+            docker-compose build --no-cache worker
+            docker-compose up -d --no-deps worker
+            log INFO "Worker updated successfully"
+            ;;
+        all)
+            log STEP "Updating all application services..."
+            docker-compose build --no-cache api bot web worker
+            docker-compose up -d api bot web worker
+            log INFO "All services updated successfully"
+            ;;
+        *)
+            log ERROR "Unknown service: $service"
+            log INFO "Available services: api, bot, web, worker, all"
+            exit 1
+            ;;
+    esac
+}
+
+restart_service() {
+    local service=$1
+
+    if [ -z "$service" ]; then
+        log ERROR "Please specify a service"
+        exit 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    if [ -f ".env" ]; then
+        set -a
+        source .env
+        set +a
+    fi
+
+    if [ "$service" = "all" ]; then
+        log STEP "Restarting all services..."
+        docker-compose restart
+    else
+        log STEP "Restarting $service..."
+        docker-compose restart "$service"
+    fi
+
+    log INFO "Service(s) restarted"
+}
+
+show_logs() {
+    local service=$1
+
+    cd "$SCRIPT_DIR"
+
+    if [ -z "$service" ]; then
+        docker-compose logs -f --tail=100
+    else
+        docker-compose logs -f --tail=100 "$service"
+    fi
+}
+
+show_status() {
+    cd "$SCRIPT_DIR"
+
+    echo ""
+    echo -e "${BLUE}=== Service Status ===${NC}"
+    echo ""
+
+    docker-compose ps
+
+    echo ""
+    echo -e "${BLUE}=== Resource Usage ===${NC}"
+    echo ""
+
+    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" \
+        $(docker-compose ps -q) 2>/dev/null || true
+
+    echo ""
+}
+
 # ============= Main =============
 
 main() {
@@ -838,27 +974,80 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")"
     touch "$LOG_FILE"
 
-    echo ""
-    echo -e "${GREEN}=== Telegram AI Business Assistant Deployment ===${NC}"
-    echo ""
+    # Check for command
+    local command="${1:-deploy}"
 
-    # Set up error handling
-    trap rollback ERR
+    case $command in
+        deploy)
+            shift 2>/dev/null || true
+            echo ""
+            echo -e "${GREEN}=== Telegram AI Business Assistant Deployment ===${NC}"
+            echo ""
 
-    parse_args "$@"
-    check_dependencies
-    find_free_ports
-    generate_env
-    update_docker_compose
-    build_and_run
-    run_migrations
-    setup_nginx_http
-    setup_ssl
-    healthcheck
-    print_summary
+            # Set up error handling
+            trap rollback ERR
 
-    # Remove trap on success
-    trap - ERR
+            parse_args "$@"
+            check_dependencies
+            find_free_ports
+            generate_env
+            update_docker_compose
+            build_and_run
+            run_migrations
+            setup_nginx_http
+            setup_ssl
+            healthcheck
+            print_summary
+
+            # Remove trap on success
+            trap - ERR
+            ;;
+        update)
+            shift
+            update_service "$1"
+            ;;
+        restart)
+            shift
+            restart_service "$1"
+            ;;
+        logs)
+            shift
+            show_logs "$1"
+            ;;
+        status)
+            show_status
+            ;;
+        --help|-h)
+            show_help
+            ;;
+        --*)
+            # Handle options without command (backwards compatibility)
+            echo ""
+            echo -e "${GREEN}=== Telegram AI Business Assistant Deployment ===${NC}"
+            echo ""
+
+            trap rollback ERR
+
+            parse_args "$@"
+            check_dependencies
+            find_free_ports
+            generate_env
+            update_docker_compose
+            build_and_run
+            run_migrations
+            setup_nginx_http
+            setup_ssl
+            healthcheck
+            print_summary
+
+            trap - ERR
+            ;;
+        *)
+            log ERROR "Unknown command: $command"
+            show_help
+            exit 1
+            ;;
+    esac
 }
 
 # Run

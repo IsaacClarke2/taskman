@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://corben.pro'
+
 interface User {
   id: number
   first_name: string
@@ -11,32 +13,61 @@ interface User {
   photo_url?: string
 }
 
+interface Integration {
+  id: string
+  provider: string
+  is_active: boolean
+  created_at: string
+}
+
+interface IntegrationStatus {
+  google_calendar?: Integration
+  outlook?: Integration
+  apple_calendar?: Integration
+  notion?: Integration
+}
+
 export default function Dashboard() {
   const router = useRouter()
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [integrations, setIntegrations] = useState<IntegrationStatus>({})
 
   useEffect(() => {
-    // Check if user is authenticated
     const token = localStorage.getItem('token')
     if (!token) {
       router.push('/')
       return
     }
 
-    // Try to get user info from localStorage or decode token
-    try {
-      // For now, just show that user is logged in
-      // In production, you'd validate token with API
-      setUser({
-        id: 0,
-        first_name: 'User'
-      })
-    } catch {
-      router.push('/')
-    } finally {
-      setLoading(false)
+    // Fetch user info and integrations
+    const fetchData = async () => {
+      try {
+        // For now, set basic user info
+        setUser({
+          id: 0,
+          first_name: 'User'
+        })
+
+        // Fetch integration status
+        const response = await fetch(`${API_URL}/api/integrations/status`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          setIntegrations(data)
+        }
+      } catch (err) {
+        console.error('Failed to fetch data:', err)
+      } finally {
+        setLoading(false)
+      }
     }
+
+    fetchData()
   }, [router])
 
   const handleLogout = () => {
@@ -70,17 +101,22 @@ export default function Dashboard() {
             <div className="space-y-3">
               <IntegrationCard
                 name="Google Calendar"
-                status="not_connected"
+                status={integrations.google_calendar?.is_active ? 'connected' : 'not_connected'}
                 href="/integrations/google"
               />
               <IntegrationCard
                 name="Microsoft Outlook"
-                status="not_connected"
+                status={integrations.outlook?.is_active ? 'connected' : 'not_connected'}
                 href="/integrations/microsoft"
               />
               <IntegrationCard
+                name="Apple Calendar"
+                status={integrations.apple_calendar?.is_active ? 'connected' : 'not_connected'}
+                href="/integrations/apple"
+              />
+              <IntegrationCard
                 name="Notion"
-                status="not_connected"
+                status={integrations.notion?.is_active ? 'connected' : 'not_connected'}
                 href="/integrations/notion"
               />
             </div>
