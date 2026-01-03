@@ -6,11 +6,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install build system and Python dependencies
 COPY pyproject.toml .
-RUN pip install --no-cache-dir pip --upgrade && \
+RUN pip install --no-cache-dir pip hatchling --upgrade && \
     pip install --no-cache-dir .
 
 # Copy application code
