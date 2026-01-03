@@ -35,8 +35,8 @@ services:
   # FastAPI Backend
   api:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: assistant-api
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD:-assistant_secret}@postgres:5432/${POSTGRES_DB:-assistant}
@@ -49,8 +49,6 @@ services:
       - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
       - NOTION_CLIENT_ID=${NOTION_CLIENT_ID}
       - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET}
-    volumes:
-      - ./api:/app
     ports:
       - "8000:8000"
     depends_on:
@@ -58,45 +56,42 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
 
   # Telegram Bot
   bot:
     build:
-      context: ./bot
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: bot/Dockerfile
     container_name: assistant-bot
     environment:
       - API_URL=http://api:8000
       - REDIS_URL=redis://redis:6379
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - WEBAPP_URL=${WEBAPP_URL}
-    volumes:
-      - ./bot:/app
     depends_on:
       - api
       - redis
-    command: python -m bot.main
+    restart: unless-stopped
 
   # Background Workers (arq)
   worker:
     build:
-      context: ./api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: api/Dockerfile
     container_name: assistant-worker
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-assistant}:${POSTGRES_PASSWORD:-assistant_secret}@postgres:5432/${POSTGRES_DB:-assistant}
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-    volumes:
-      - ./api:/app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: arq workers.main.WorkerSettings
+    command: echo "Worker placeholder - arq not configured"
+    restart: unless-stopped
 
   # Next.js Web App
   web:
@@ -107,15 +102,11 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
-    volumes:
-      - ./web:/app
-      - /app/node_modules
-      - /app/.next
     ports:
       - "3000:3000"
     depends_on:
       - api
-    command: npm run dev
+    restart: unless-stopped
 
   # Traefik Reverse Proxy (for production-like setup)
   traefik:
