@@ -98,10 +98,10 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-corbentask_bot}
+        - NEXT_PUBLIC_API_URL=${WEBAPP_URL:-https://corben.pro}
     container_name: assistant-web
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
     ports:
       - "3000:3000"
     depends_on:
