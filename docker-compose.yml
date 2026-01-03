@@ -48,7 +48,7 @@ services:
       - NOTION_CLIENT_ID=${NOTION_CLIENT_ID}
       - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,7 +101,7 @@ services:
         - NEXT_PUBLIC_API_URL=${WEBAPP_URL:-https://corben.pro}
     container_name: assistant-web
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
       - api
     restart: unless-stopped
