@@ -22,7 +22,7 @@ fi
 
 echo ""
 echo -e "${YELLOW}Step 1: Pull latest changes${NC}"
-git pull origin claude/review-telegram-assistant-gKXIQ
+git pull origin main
 
 echo ""
 echo -e "${YELLOW}Step 2: Check .env for new variables${NC}"
