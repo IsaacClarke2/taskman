@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://corben.pro'
 
-export default function NotionIntegration() {
+function NotionIntegrationContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [status, setStatus] = useState<'loading' | 'connecting' | 'success' | 'error'>('loading')
@@ -160,5 +160,24 @@ export default function NotionIntegration() {
         )}
       </div>
     </main>
+  )
+}
+
+function LoadingFallback() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center p-8">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-lg p-8 text-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
+        <p className="text-gray-600">Loading...</p>
+      </div>
+    </main>
+  )
+}
+
+export default function NotionIntegration() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <NotionIntegrationContent />
+    </Suspense>
   )
 }
