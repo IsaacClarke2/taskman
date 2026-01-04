@@ -63,15 +63,15 @@ class Settings(BaseSettings):
 
     @property
     def google_redirect_uri(self) -> str:
-        return f"{self.webapp_url}/integrations/google/callback"
+        return f"{self.webapp_url}/integrations/google"
 
     @property
     def microsoft_redirect_uri(self) -> str:
-        return f"{self.webapp_url}/integrations/outlook/callback"
+        return f"{self.webapp_url}/integrations/microsoft"
 
     @property
     def notion_redirect_uri(self) -> str:
-        return f"{self.webapp_url}/integrations/notion/callback"
+        return f"{self.webapp_url}/integrations/notion"
 
 
 @lru_cache
