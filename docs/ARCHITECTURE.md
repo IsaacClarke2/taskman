@@ -60,12 +60,20 @@
 │ - REST API      │        │ - OAuth 2.0     │        │ - App password  │
 └─────────────────┘        └─────────────────┘        └─────────────────┘
 
+┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐
+│     NOTION      │        │   APPLE NOTES   │        │     YANDEX      │
+│   CONNECTOR     │        │   CONNECTOR     │        │   CALENDAR      │
+├─────────────────┤        ├─────────────────┤        ├─────────────────┤
+│ - REST API      │        │ - iOS Shortcut  │        │ - CalDAV        │
+│ - OAuth 2.0     │        │ - Webhook bridge│        │ - App password  │
+└─────────────────┘        └─────────────────┘        └─────────────────┘
+
 ┌─────────────────┐        ┌─────────────────┐
-│     NOTION      │        │   APPLE NOTES   │
-│   CONNECTOR     │        │   CONNECTOR     │
+│      ZOOM       │        │   AI DIRECTOR   │
+│   CONNECTOR     │        │    SERVICE      │
 ├─────────────────┤        ├─────────────────┤
-│ - REST API      │        │ - iOS Shortcut  │
-│ - OAuth 2.0     │        │ - Webhook bridge│
+│ - OAuth 2.0     │        │ - Local vs GPT  │
+│ - Meeting API   │        │ - Rate limiting │
 └─────────────────┘        └─────────────────┘
 
                                     │
@@ -109,8 +117,13 @@ async def handle_callback(callback: CallbackQuery)
 ```
 
 **State Management:**
-- Uses Redis for conversation state
+- Uses Redis for conversation state (with proper aclose() cleanup)
+- Pending events stored with 30 min TTL
 - States: `idle`, `awaiting_confirmation`, `editing_event`, `selecting_calendar`
+
+**Conference Buttons:**
+- Google Meet - adds conferenceData to Calendar API
+- Zoom - creates meeting via Zoom API, adds link to event
 
 ### 2. Core Service (FastAPI)
 
@@ -118,8 +131,16 @@ async def handle_callback(callback: CallbackQuery)
 
 #### Parser Module
 - Converts voice to text (Whisper API)
+- **Local dateparser first** (reduces OpenAI costs)
+- Falls back to GPT for complex cases
 - Extracts structured data from text (GPT)
 - Normalizes dates/times to user timezone
+
+#### AI Director Module
+- Decides when to use local parsing vs GPT
+- Per-user rate limiting (50 GPT/hour, 20 Whisper/hour)
+- Message complexity analysis
+- Cost optimization for API usage
 
 #### Router Module
 - Determines content type (event/note/reminder)
@@ -175,6 +196,17 @@ class BaseConnector(ABC):
 - Webhook triggers Shortcut on user's device
 - Requires user setup (Shortcut installation)
 
+#### Yandex Calendar Connector
+- CalDAV protocol (same as Apple)
+- App-specific password authentication
+- Yandex CalDAV endpoint: `caldav.yandex.ru`
+- Telemost link support (Yandex 360 business only)
+
+#### Zoom Connector
+- OAuth 2.0 User-Level App
+- Meeting creation API
+- Auto-generates join URLs for events
+
 ### 4. Web App (Next.js)
 
 **Pages:**
@@ -202,9 +234,15 @@ class BaseConnector(ABC):
 | Job | Trigger | Purpose |
 |-----|---------|---------|
 | `transcribe_voice` | Voice message received | Call Whisper API |
-| `create_calendar_event` | User confirms | Create event via connector |
+| `create_calendar_event` | User confirms | Create event via connector (idempotent) |
+| `parse_message_gpt` | Complex message | GPT parsing with rate limit |
+| `send_notification` | Various | Send Telegram messages |
 | `refresh_tokens` | Scheduled (hourly) | Refresh OAuth tokens |
 | `sync_calendars` | Scheduled (daily) | Update calendar cache |
+| `check_upcoming_events` | Scheduled (hourly) | Send reminders |
+
+**Idempotency:**
+All jobs support idempotency via Redis keys to prevent duplicate operations on retry.
 
 ### 6. Data Flow Examples
 

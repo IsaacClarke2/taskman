@@ -47,6 +47,9 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
+        # Cleanup resources properly
+        from bot.handlers.messages import close_redis
+        await close_redis()
         await bot.session.close()
 
 

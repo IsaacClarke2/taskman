@@ -219,6 +219,7 @@ SUMMARY:{event.title}
                 start=start,
                 end=end,
                 expand=True,
+                event=True,  # Explicitly request events (some servers require this)
             )
 
         loop = asyncio.get_event_loop()

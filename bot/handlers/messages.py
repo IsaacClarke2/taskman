@@ -38,6 +38,20 @@ async def get_redis() -> redis.Redis:
     return _redis_client
 
 
+async def close_redis() -> None:
+    """
+    Close Redis connection properly.
+
+    IMPORTANT: Must be called on bot shutdown to prevent connection leaks.
+    See: https://redis.readthedocs.io/en/stable/examples/asyncio_examples.html
+    """
+    global _redis_client
+    if _redis_client is not None:
+        await _redis_client.aclose()
+        _redis_client = None
+        logger.info("Redis connection closed")
+
+
 async def save_pending_event(event_id: str, event_data: dict) -> None:
     """Save pending event to Redis."""
     r = await get_redis()

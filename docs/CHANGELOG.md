@@ -14,11 +14,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for Claude Code configuration
 - PROJECT_STATUS.md for tracking progress
 
+## [0.9.0] - 2026-01-04
+
+### Added - Phase 1: Cost Optimization
+- **dateparser integration** - Local date parsing for Russian/English without OpenAI calls
+- **Redis state storage** - Bot pending events stored in Redis with 30 min TTL
+- **ARQ background workers** - Async job processing for long-running tasks
+- **AI Director service** - Smart routing between local parsing and GPT
+
+### Added - Phase 2: New Integrations
+- **Zoom connector** - OAuth 2.0 flow + meeting creation API
+- **Yandex Calendar** - CalDAV connector with app-specific password auth
+- **Google Meet support** - conferenceData added to Google Calendar events
+- **Conference buttons** in bot - "📹 + Google Meet" and "📹 + Zoom"
+
+### Added - Phase 3: Rate Limiting
+- Per-user rate limits: 50 GPT calls/hour, 20 Whisper calls/hour
+- Message complexity analysis for routing decisions
+- Idempotency keys in ARQ jobs to prevent duplicates
+
+### Fixed
+- Redis connection cleanup on bot shutdown (aclose())
+- CalDAV event=True parameter for better server compatibility
+- Proper resource cleanup in all async handlers
+
+### Security
+- Rate limiting prevents API abuse
+- Idempotency prevents duplicate event creation on retries
+
+## [0.8.0] - 2025-01-04
+
+### Added
+- All calendar connectors (Google, Outlook, Apple)
+- Notion notes connector
+- Web OAuth flows for all integrations
+- Dashboard with integration status
+- Telegram Login Widget authentication
+- JWT session management
+
 ### Planned
-- Project scaffolding (docker-compose, basic structure)
-- Telegram bot skeleton
-- Database models and migrations
-- Google Calendar OAuth integration
 
 ---
 

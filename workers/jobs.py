@@ -2,14 +2,34 @@
 ARQ background job handlers.
 
 All long-running tasks should be processed here.
+
+Important: All jobs should be idempotent - designed to handle being called
+multiple times with the same parameters without creating duplicates.
+See: https://arq-docs.helpmanual.io/
 """
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_idempotency_key(user_id: UUID, event_data: dict) -> str:
+    """Generate idempotency key for event creation."""
+    # Create stable hash from user_id and event data
+    data_str = json.dumps(
+        {
+            "user_id": str(user_id),
+            "title": event_data.get("title", ""),
+            "start": str(event_data.get("start_datetime", "")),
+        },
+        sort_keys=True,
+    )
+    return f"event:{hashlib.md5(data_str.encode()).hexdigest()}"
 
 
 async def create_calendar_event(
@@ -33,8 +53,19 @@ async def create_calendar_event(
 
     Returns:
         Created event data or error.
+
+    Note: This job is idempotent - calling with same parameters won't create duplicates.
     """
     logger.info(f"Creating event for user {user_id}: {event_data.get('title')}")
+
+    # Check idempotency - prevent duplicate event creation
+    idempotency_key = _generate_idempotency_key(user_id, event_data)
+    redis = ctx.get("redis")
+    if redis:
+        existing = await redis.get(idempotency_key)
+        if existing:
+            logger.info(f"Event already created (idempotency key: {idempotency_key})")
+            return json.loads(existing)
 
     try:
         from sqlalchemy import select
@@ -108,7 +139,17 @@ async def create_calendar_event(
                 return {"error": f"Unknown provider: {integration.provider}", "success": False}
 
             logger.info(f"Event created: {result}")
-            return {"success": True, "event": result}
+            response = {"success": True, "event": result}
+
+            # Store idempotency key to prevent duplicates on retry
+            if redis:
+                await redis.setex(
+                    idempotency_key,
+                    3600,  # 1 hour TTL
+                    json.dumps(response, default=str),
+                )
+
+            return response
 
     except Exception as e:
         logger.error(f"Failed to create event: {e}", exc_info=True)
