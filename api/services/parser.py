@@ -1,5 +1,7 @@
 """
 Parser service - Whisper transcription and GPT parsing.
+
+Uses local dateparser first, falls back to GPT for complex cases.
 """
 
 import json
@@ -11,13 +13,28 @@ from openai import AsyncOpenAI
 
 from api.config import get_settings
 from api.models.responses import ParsedContentResponse
+from api.services.date_parser import (
+    DateParseResult,
+    extract_title_from_text,
+    parse_date_local,
+)
 
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-# Initialize OpenAI client
-client = AsyncOpenAI(api_key=settings.openai_api_key)
+# Initialize OpenAI client lazily
+_openai_client: Optional[AsyncOpenAI] = None
+
+
+def get_openai_client() -> AsyncOpenAI:
+    """Get or create OpenAI client."""
+    global _openai_client
+    if _openai_client is None:
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured")
+        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
 
 # GPT prompt for parsing messages
 PARSE_PROMPT_TEMPLATE = """You are a message parser for a calendar assistant. Extract event or note information from user messages.
@@ -71,6 +88,8 @@ async def transcribe_voice(audio_bytes: bytes, filename: str = "audio.oga") -> s
     logger.info(f"Transcribing audio: {len(audio_bytes)} bytes")
 
     try:
+        client = get_openai_client()
+
         # Create a file-like object for the API
         transcription = await client.audio.transcriptions.create(
             model=settings.openai_whisper_model,
@@ -90,14 +109,18 @@ async def parse_message(
     text: str,
     user_timezone: str = "Europe/Moscow",
     forwarded_from: Optional[str] = None,
+    force_gpt: bool = False,
 ) -> ParsedContentResponse:
     """
-    Parse a text message using GPT to extract event/note information.
+    Parse a text message to extract event/note information.
+
+    Uses local dateparser first, falls back to GPT for complex cases.
 
     Args:
         text: Message text (or transcribed voice).
         user_timezone: User's timezone for date/time interpretation.
         forwarded_from: Original sender name if message was forwarded.
+        force_gpt: Force GPT parsing (skip local parsing).
 
     Returns:
         ParsedContentResponse with extracted information.
@@ -106,6 +129,54 @@ async def parse_message(
         Exception: If parsing fails.
     """
     logger.info(f"Parsing message: {text[:100]}...")
+
+    # Try local parsing first (unless forced to use GPT)
+    if not force_gpt:
+        local_result = parse_date_local(text, user_timezone)
+
+        if local_result.success and not local_result.needs_gpt:
+            logger.info(f"Local parsing successful, confidence: {local_result.confidence}")
+
+            # Determine content type
+            if local_result.is_note:
+                content_type = "note"
+            elif local_result.is_event:
+                content_type = "event"
+            else:
+                content_type = "unclear"
+
+            # Add forwarded sender as participant if provided
+            participants = local_result.participants or []
+            if forwarded_from and forwarded_from not in participants:
+                participants.append(forwarded_from)
+
+            return ParsedContentResponse(
+                content_type=content_type,
+                confidence=local_result.confidence,
+                title=local_result.title or extract_title_from_text(text),
+                start_datetime=local_result.start_datetime,
+                end_datetime=local_result.end_datetime,
+                duration_minutes=local_result.duration_minutes,
+                location=local_result.location,
+                participants=participants,
+                note_title=local_result.title if local_result.is_note else None,
+                note_content=text if local_result.is_note else None,
+                clarification_needed=None,
+            )
+
+        logger.info("Local parsing needs GPT fallback")
+
+    # Fall back to GPT parsing
+    return await _parse_with_gpt(text, user_timezone, forwarded_from)
+
+
+async def _parse_with_gpt(
+    text: str,
+    user_timezone: str = "Europe/Moscow",
+    forwarded_from: Optional[str] = None,
+) -> ParsedContentResponse:
+    """Parse message using GPT (internal function)."""
+    logger.info("Using GPT for parsing...")
 
     # Build the prompt
     current_datetime = datetime.now().isoformat()
@@ -120,6 +191,8 @@ async def parse_message(
     )
 
     try:
+        client = get_openai_client()
+
         response = await client.chat.completions.create(
             model=settings.openai_model,
             messages=[

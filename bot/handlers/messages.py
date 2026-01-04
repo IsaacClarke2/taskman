@@ -1,11 +1,16 @@
 """
 Message handlers for text, voice, and forwarded messages.
+
+Uses Redis for state storage instead of in-memory dict.
 """
 
+import json
 import logging
+from datetime import timedelta
 from typing import Optional
 
 import httpx
+import redis.asyncio as redis
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -14,8 +19,48 @@ from bot.config import config
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Temporary storage for pending events (in production, use Redis)
-pending_events: dict[str, dict] = {}
+# Redis client for state storage
+_redis_client: Optional[redis.Redis] = None
+
+PENDING_KEY_PREFIX = "pending:event:"
+PENDING_TTL = timedelta(minutes=30)
+
+
+async def get_redis() -> redis.Redis:
+    """Get or create Redis client."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            config.REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+    return _redis_client
+
+
+async def save_pending_event(event_id: str, event_data: dict) -> None:
+    """Save pending event to Redis."""
+    r = await get_redis()
+    await r.setex(
+        f"{PENDING_KEY_PREFIX}{event_id}",
+        PENDING_TTL,
+        json.dumps(event_data, default=str),
+    )
+
+
+async def get_pending_event(event_id: str) -> Optional[dict]:
+    """Get pending event from Redis."""
+    r = await get_redis()
+    data = await r.get(f"{PENDING_KEY_PREFIX}{event_id}")
+    if data:
+        return json.loads(data)
+    return None
+
+
+async def delete_pending_event(event_id: str) -> None:
+    """Delete pending event from Redis."""
+    r = await get_redis()
+    await r.delete(f"{PENDING_KEY_PREFIX}{event_id}")
 
 
 async def call_api(endpoint: str, method: str = "POST", **kwargs) -> Optional[dict]:
@@ -61,20 +106,27 @@ def format_event_preview(parsed: dict) -> str:
     )
 
 
-def get_event_keyboard(event_id: str) -> InlineKeyboardMarkup:
+def get_event_keyboard(event_id: str, show_conference: bool = True) -> InlineKeyboardMarkup:
     """Create inline keyboard for event confirmation."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✓ Создать", callback_data=f"confirm:{event_id}"),
-                InlineKeyboardButton(text="✎ Изменить", callback_data=f"edit:{event_id}"),
-            ],
-            [
-                InlineKeyboardButton(text="📅 Другой календарь", callback_data=f"calendar:{event_id}"),
-                InlineKeyboardButton(text="✗ Отмена", callback_data=f"cancel:{event_id}"),
-            ],
-        ]
-    )
+    rows = [
+        [
+            InlineKeyboardButton(text="✓ Создать", callback_data=f"confirm:{event_id}"),
+            InlineKeyboardButton(text="✎ Изменить", callback_data=f"edit:{event_id}"),
+        ],
+    ]
+
+    if show_conference:
+        rows.append([
+            InlineKeyboardButton(text="📹 + Google Meet", callback_data=f"meet:{event_id}"),
+            InlineKeyboardButton(text="📹 + Zoom", callback_data=f"zoom:{event_id}"),
+        ])
+
+    rows.append([
+        InlineKeyboardButton(text="📅 Другой календарь", callback_data=f"calendar:{event_id}"),
+        InlineKeyboardButton(text="✗ Отмена", callback_data=f"cancel:{event_id}"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_note_keyboard(note_id: str) -> InlineKeyboardMarkup:
@@ -120,9 +172,9 @@ async def handle_text(message: Message):
     content_type = result.get("content_type", "unclear")
 
     if content_type == "event":
-        # Generate event ID
+        # Generate event ID and save to Redis
         event_id = f"{user_id}_{message.message_id}"
-        pending_events[event_id] = result
+        await save_pending_event(event_id, result)
 
         preview = format_event_preview(result)
         keyboard = get_event_keyboard(event_id)
@@ -131,7 +183,7 @@ async def handle_text(message: Message):
 
     elif content_type == "note":
         note_id = f"{user_id}_{message.message_id}"
-        pending_events[note_id] = result
+        await save_pending_event(note_id, result)
 
         title = result.get("title", "Заметка")
         content = result.get("note_content", text)
@@ -206,7 +258,7 @@ async def handle_voice(message: Message):
 
     if content_type == "event":
         event_id = f"{user_id}_{message.message_id}"
-        pending_events[event_id] = result
+        await save_pending_event(event_id, result)
 
         preview = f"📝 <i>{transcribed_text}</i>\n\n" + format_event_preview(result)
         keyboard = get_event_keyboard(event_id)
@@ -256,10 +308,11 @@ async def handle_forwarded(message: Message):
 
     if content_type == "event":
         event_id = f"{user_id}_{message.message_id}"
-        pending_events[event_id] = result
 
         if forwarded_from:
             result["participants"] = result.get("participants", []) + [forwarded_from]
+
+        await save_pending_event(event_id, result)
 
         preview = format_event_preview(result)
         if forwarded_from:
@@ -278,7 +331,7 @@ async def handle_forwarded(message: Message):
 async def confirm_event(callback: CallbackQuery):
     """Handle event confirmation."""
     event_id = callback.data.split(":")[1]
-    event_data = pending_events.get(event_id)
+    event_data = await get_pending_event(event_id)
 
     if not event_data:
         await callback.answer("Событие устарело", show_alert=True)
@@ -291,15 +344,63 @@ async def confirm_event(callback: CallbackQuery):
     )
 
     # Clean up
-    pending_events.pop(event_id, None)
+    await delete_pending_event(event_id)
     await callback.answer("Событие создано!")
+
+
+@router.callback_query(lambda c: c.data.startswith("meet:"))
+async def add_google_meet(callback: CallbackQuery):
+    """Handle adding Google Meet to event."""
+    event_id = callback.data.split(":")[1]
+    event_data = await get_pending_event(event_id)
+
+    if not event_data:
+        await callback.answer("Событие устарело", show_alert=True)
+        return
+
+    # Mark event as needing Google Meet
+    event_data["add_conference"] = "google_meet"
+    await save_pending_event(event_id, event_data)
+
+    # TODO: Create event with Google Meet via API
+    await callback.message.edit_text(
+        callback.message.text + "\n\n✅ <b>Событие создано с Google Meet!</b>",
+        reply_markup=None,
+    )
+
+    await delete_pending_event(event_id)
+    await callback.answer("Событие с Google Meet создано!")
+
+
+@router.callback_query(lambda c: c.data.startswith("zoom:"))
+async def add_zoom(callback: CallbackQuery):
+    """Handle adding Zoom to event."""
+    event_id = callback.data.split(":")[1]
+    event_data = await get_pending_event(event_id)
+
+    if not event_data:
+        await callback.answer("Событие устарело", show_alert=True)
+        return
+
+    # Mark event as needing Zoom
+    event_data["add_conference"] = "zoom"
+    await save_pending_event(event_id, event_data)
+
+    # TODO: Create event with Zoom via API
+    await callback.message.edit_text(
+        callback.message.text + "\n\n✅ <b>Событие создано с Zoom!</b>",
+        reply_markup=None,
+    )
+
+    await delete_pending_event(event_id)
+    await callback.answer("Событие с Zoom создано!")
 
 
 @router.callback_query(lambda c: c.data.startswith("cancel:"))
 async def cancel_event(callback: CallbackQuery):
     """Handle event cancellation."""
     event_id = callback.data.split(":")[1]
-    pending_events.pop(event_id, None)
+    await delete_pending_event(event_id)
 
     await callback.message.edit_text(
         callback.message.text + "\n\n❌ <i>Отменено</i>",
@@ -312,7 +413,7 @@ async def cancel_event(callback: CallbackQuery):
 async def copy_note(callback: CallbackQuery):
     """Handle note copy (clipboard bridge for Apple Notes)."""
     note_id = callback.data.split(":")[1]
-    note_data = pending_events.get(note_id)
+    note_data = await get_pending_event(note_id)
 
     if not note_data:
         await callback.answer("Заметка устарела", show_alert=True)
@@ -334,5 +435,5 @@ async def copy_note(callback: CallbackQuery):
         ),
     )
 
-    pending_events.pop(note_id, None)
+    await delete_pending_event(note_id)
     await callback.answer("Текст готов для копирования!")

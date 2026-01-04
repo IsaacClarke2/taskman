@@ -102,6 +102,29 @@ async def get_notion_auth_url(settings: AppSettings):
     return OAuthURLResponse(authorization_url=url, state=state)
 
 
+@router.get("/zoom/auth", response_model=OAuthURLResponse)
+async def get_zoom_auth_url(settings: AppSettings):
+    """Get Zoom OAuth authorization URL."""
+    if not settings.zoom_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Zoom OAuth not configured",
+        )
+
+    state = secrets.token_urlsafe(32)
+    _oauth_states[state] = "zoom"
+
+    params = {
+        "client_id": settings.zoom_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.zoom_redirect_uri,
+        "state": state,
+    }
+    url = f"https://zoom.us/oauth/authorize?{urlencode(params)}"
+
+    return OAuthURLResponse(authorization_url=url, state=state)
+
+
 # ============= OAuth Callbacks =============
 
 
@@ -316,6 +339,94 @@ async def connect_apple_calendar(
     return IntegrationResponse.model_validate(integration)
 
 
+@router.post("/zoom/callback", response_model=IntegrationResponse)
+async def zoom_oauth_callback(
+    request: IntegrationConnectRequest,
+    current_user: CurrentUser,
+    session: DatabaseSession,
+    settings: AppSettings,
+):
+    """Handle Zoom OAuth callback and store tokens."""
+    from api.connectors.zoom import ZoomConnector
+
+    # Verify state
+    if request.state and _oauth_states.get(request.state) != "zoom":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state",
+        )
+
+    # Exchange code for tokens
+    try:
+        tokens = await ZoomConnector.exchange_code(
+            code=request.code,
+            client_id=settings.zoom_client_id,
+            client_secret=settings.zoom_client_secret,
+            redirect_uri=settings.zoom_redirect_uri,
+        )
+    except Exception as e:
+        logger.error(f"Zoom token exchange failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to exchange authorization code",
+        )
+
+    # Store integration
+    integration = await _create_or_update_integration(
+        session=session,
+        user_id=current_user.id,
+        provider="zoom",
+        credentials=tokens,
+    )
+
+    if request.state:
+        _oauth_states.pop(request.state, None)
+
+    return IntegrationResponse.model_validate(integration)
+
+
+@router.post("/yandex/connect", response_model=IntegrationResponse)
+async def connect_yandex_calendar(
+    request: AppleCalendarConnectRequest,  # Same structure: email + app_password
+    current_user: CurrentUser,
+    session: DatabaseSession,
+):
+    """Connect Yandex Calendar via CalDAV with app-specific password."""
+    import caldav
+
+    # Test CalDAV connection
+    try:
+        client = caldav.DAVClient(
+            url="https://caldav.yandex.ru",
+            username=request.email,
+            password=request.app_password,
+        )
+        principal = client.principal()
+        calendars = principal.calendars()
+        logger.info(f"Connected to Yandex Calendar: {len(calendars)} calendars found")
+    except Exception as e:
+        logger.error(f"Yandex Calendar connection failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to connect to Yandex Calendar. Check login and app-specific password.",
+        )
+
+    # Store integration
+    credentials = {
+        "username": request.email,
+        "app_password": request.app_password,
+    }
+
+    integration = await _create_or_update_integration(
+        session=session,
+        user_id=current_user.id,
+        provider="yandex_calendar",
+        credentials=credentials,
+    )
+
+    return IntegrationResponse.model_validate(integration)
+
+
 # ============= Integration Management =============
 
 
@@ -339,8 +450,12 @@ async def get_integration_status(
             status.outlook = response
         elif integration.provider == "apple_calendar":
             status.apple_calendar = response
+        elif integration.provider == "yandex_calendar":
+            status.yandex_calendar = response
         elif integration.provider == "notion":
             status.notion = response
+        elif integration.provider == "zoom":
+            status.zoom = response
 
     return status
 

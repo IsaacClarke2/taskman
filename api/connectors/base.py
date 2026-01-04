@@ -19,6 +19,7 @@ class Event(BaseModel):
     location: Optional[str] = None
     description: Optional[str] = None
     calendar_id: str
+    conference_link: Optional[str] = None  # Google Meet, Zoom, etc.
 
 
 class TimeSlot(BaseModel):

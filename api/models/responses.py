@@ -136,5 +136,7 @@ class IntegrationStatusResponse(BaseModel):
     google_calendar: Optional[IntegrationResponse] = None
     outlook: Optional[IntegrationResponse] = None
     apple_calendar: Optional[IntegrationResponse] = None
+    yandex_calendar: Optional[IntegrationResponse] = None
     notion: Optional[IntegrationResponse] = None
+    zoom: Optional[IntegrationResponse] = None
     apple_notes: bool = False  # Apple Notes uses clipboard bridge, not OAuth

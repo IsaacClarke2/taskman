@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     notion_client_id: str = ""
     notion_client_secret: str = ""
 
+    # Zoom OAuth
+    zoom_client_id: str = ""
+    zoom_client_secret: str = ""
+
     # JWT for session management
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
@@ -72,6 +76,10 @@ class Settings(BaseSettings):
     @property
     def notion_redirect_uri(self) -> str:
         return f"{self.webapp_url}/integrations/notion"
+
+    @property
+    def zoom_redirect_uri(self) -> str:
+        return f"{self.webapp_url}/integrations/zoom"
 
 
 @lru_cache

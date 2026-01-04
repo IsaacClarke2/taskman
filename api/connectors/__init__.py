@@ -18,6 +18,8 @@ from api.connectors.base import (
 from api.connectors.google import GoogleCalendarConnector
 from api.connectors.notion import NotionConnector
 from api.connectors.outlook import OutlookConnector
+from api.connectors.yandex import YandexCalendarConnector
+from api.connectors.zoom import ZoomConnector, ZoomMeeting
 
 __all__ = [
     # Base classes
@@ -32,9 +34,12 @@ __all__ = [
     "TimeSlot",
     "Note",
     "NoteCreate",
+    "ZoomMeeting",
     # Connectors
     "GoogleCalendarConnector",
     "OutlookConnector",
     "AppleCalendarConnector",
+    "YandexCalendarConnector",
     "NotionConnector",
+    "ZoomConnector",
 ]

@@ -119,8 +119,25 @@ class GoogleCalendarConnector(CalendarConnector):
 
         return calendars
 
-    async def create_event(self, calendar_id: str, event: EventCreate) -> Event:
-        """Create a new event in the specified calendar."""
+    async def create_event(
+        self,
+        calendar_id: str,
+        event: EventCreate,
+        add_google_meet: bool = False,
+    ) -> Event:
+        """
+        Create a new event in the specified calendar.
+
+        Args:
+            calendar_id: Target calendar ID.
+            event: Event details.
+            add_google_meet: Whether to create a Google Meet link.
+
+        Returns:
+            Created event with conference link if requested.
+        """
+        import uuid
+
         body = {
             "summary": event.title,
             "start": {"dateTime": event.start.isoformat(), "timeZone": "UTC"},
@@ -132,11 +149,33 @@ class GoogleCalendarConnector(CalendarConnector):
         if event.description:
             body["description"] = event.description
 
+        # Add Google Meet conference
+        if add_google_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": str(uuid.uuid4()),
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
+        # Need conferenceDataVersion=1 for Meet creation
+        params = {"conferenceDataVersion": 1} if add_google_meet else None
+
         data = await self._request(
             "POST",
             f"/calendars/{calendar_id}/events",
             json=body,
+            params=params,
         )
+
+        # Extract Meet link if created
+        meet_link = None
+        conference_data = data.get("conferenceData", {})
+        entry_points = conference_data.get("entryPoints", [])
+        for entry in entry_points:
+            if entry.get("entryPointType") == "video":
+                meet_link = entry.get("uri")
+                break
 
         return Event(
             id=data["id"],
@@ -146,6 +185,7 @@ class GoogleCalendarConnector(CalendarConnector):
             location=data.get("location"),
             description=data.get("description"),
             calendar_id=calendar_id,
+            conference_link=meet_link,
         )
 
     async def list_events(
