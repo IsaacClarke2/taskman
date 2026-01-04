@@ -1,9 +1,14 @@
 """
 Integrations router - OAuth flows and integration management.
+
+Features:
+- Redis-based OAuth state storage with TTL
+- Automatic token expiration tracking
+- Proactive token refresh support
 """
 
 import logging
-import secrets
+import time
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -15,13 +20,12 @@ from api.dependencies import AppSettings, CurrentUser, DatabaseSession
 from api.models.requests import AppleCalendarConnectRequest, IntegrationConnectRequest
 from api.models.responses import IntegrationResponse, IntegrationStatusResponse, OAuthURLResponse
 from api.utils.crypto import encrypt_credentials
+from api.utils.oauth_state import create_oauth_state, consume_oauth_state, validate_oauth_state
+from api.utils.token_manager import add_expiration_time
 from db.models import Integration
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# OAuth state storage (in production, use Redis)
-_oauth_states: dict[str, str] = {}
 
 
 # ============= OAuth URL Generation =============
@@ -36,8 +40,7 @@ async def get_google_auth_url(settings: AppSettings):
             detail="Google OAuth not configured",
         )
 
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = "google"
+    state = await create_oauth_state("google")
 
     params = {
         "client_id": settings.google_client_id,
@@ -62,8 +65,7 @@ async def get_outlook_auth_url(settings: AppSettings):
             detail="Microsoft OAuth not configured",
         )
 
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = "outlook"
+    state = await create_oauth_state("outlook")
 
     params = {
         "client_id": settings.microsoft_client_id,
@@ -87,8 +89,7 @@ async def get_notion_auth_url(settings: AppSettings):
             detail="Notion OAuth not configured",
         )
 
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = "notion"
+    state = await create_oauth_state("notion")
 
     params = {
         "client_id": settings.notion_client_id,
@@ -111,8 +112,7 @@ async def get_zoom_auth_url(settings: AppSettings):
             detail="Zoom OAuth not configured",
         )
 
-    state = secrets.token_urlsafe(32)
-    _oauth_states[state] = "zoom"
+    state = await create_oauth_state("zoom")
 
     params = {
         "client_id": settings.zoom_client_id,
@@ -138,12 +138,13 @@ async def google_oauth_callback(
     """Handle Google OAuth callback and store tokens."""
     import httpx
 
-    # Verify state
-    if request.state and _oauth_states.get(request.state) != "google":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state",
-        )
+    # Verify state using Redis
+    if request.state:
+        if not await validate_oauth_state(request.state, "google"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid OAuth state",
+            )
 
     # Exchange code for tokens
     async with httpx.AsyncClient() as client:
@@ -167,6 +168,9 @@ async def google_oauth_callback(
 
         tokens = response.json()
 
+    # Add expiration timestamp
+    tokens = add_expiration_time(tokens)
+
     # Store integration
     integration = await _create_or_update_integration(
         session=session,
@@ -175,9 +179,9 @@ async def google_oauth_callback(
         credentials=tokens,
     )
 
-    # Clean up state
+    # Consume state (one-time use)
     if request.state:
-        _oauth_states.pop(request.state, None)
+        await consume_oauth_state(request.state)
 
     return IntegrationResponse.model_validate(integration)
 
@@ -193,11 +197,12 @@ async def outlook_oauth_callback(
     import httpx
 
     # Verify state
-    if request.state and _oauth_states.get(request.state) != "outlook":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state",
-        )
+    if request.state:
+        if not await validate_oauth_state(request.state, "outlook"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid OAuth state",
+            )
 
     # Exchange code for tokens
     async with httpx.AsyncClient() as client:
@@ -222,6 +227,9 @@ async def outlook_oauth_callback(
 
         tokens = response.json()
 
+    # Add expiration timestamp
+    tokens = add_expiration_time(tokens)
+
     # Store integration
     integration = await _create_or_update_integration(
         session=session,
@@ -231,7 +239,7 @@ async def outlook_oauth_callback(
     )
 
     if request.state:
-        _oauth_states.pop(request.state, None)
+        await consume_oauth_state(request.state)
 
     return IntegrationResponse.model_validate(integration)
 
@@ -249,11 +257,12 @@ async def notion_oauth_callback(
     import httpx
 
     # Verify state
-    if request.state and _oauth_states.get(request.state) != "notion":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state",
-        )
+    if request.state:
+        if not await validate_oauth_state(request.state, "notion"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid OAuth state",
+            )
 
     # Notion uses Basic auth for token exchange
     credentials = base64.b64encode(
@@ -292,7 +301,7 @@ async def notion_oauth_callback(
     )
 
     if request.state:
-        _oauth_states.pop(request.state, None)
+        await consume_oauth_state(request.state)
 
     return IntegrationResponse.model_validate(integration)
 
@@ -304,18 +313,31 @@ async def connect_apple_calendar(
     session: DatabaseSession,
 ):
     """Connect Apple Calendar via CalDAV with app-specific password."""
-    import caldav
+    import asyncio
 
-    # Test CalDAV connection
+    import caldav
+    from caldav.lib.error import AuthorizationError
+
+    # Test CalDAV connection using asyncio.to_thread()
     try:
-        client = caldav.DAVClient(
-            url="https://caldav.icloud.com",
-            username=request.email,
-            password=request.app_password,
-        )
-        principal = client.principal()
-        calendars = principal.calendars()
+        def test_connection():
+            client = caldav.DAVClient(
+                url="https://caldav.icloud.com",
+                username=request.email,
+                password=request.app_password,
+            )
+            principal = client.principal()
+            return principal.calendars()
+
+        calendars = await asyncio.to_thread(test_connection)
         logger.info(f"Connected to Apple Calendar: {len(calendars)} calendars found")
+
+    except AuthorizationError as e:
+        logger.error(f"Apple Calendar auth failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication failed. Check email and app-specific password.",
+        )
     except Exception as e:
         logger.error(f"Apple Calendar connection failed: {e}")
         raise HTTPException(
@@ -350,11 +372,12 @@ async def zoom_oauth_callback(
     from api.connectors.zoom import ZoomConnector
 
     # Verify state
-    if request.state and _oauth_states.get(request.state) != "zoom":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state",
-        )
+    if request.state:
+        if not await validate_oauth_state(request.state, "zoom"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid OAuth state",
+            )
 
     # Exchange code for tokens
     try:
@@ -371,6 +394,9 @@ async def zoom_oauth_callback(
             detail="Failed to exchange authorization code",
         )
 
+    # Add expiration timestamp
+    tokens = add_expiration_time(tokens)
+
     # Store integration
     integration = await _create_or_update_integration(
         session=session,
@@ -380,7 +406,7 @@ async def zoom_oauth_callback(
     )
 
     if request.state:
-        _oauth_states.pop(request.state, None)
+        await consume_oauth_state(request.state)
 
     return IntegrationResponse.model_validate(integration)
 
@@ -392,18 +418,31 @@ async def connect_yandex_calendar(
     session: DatabaseSession,
 ):
     """Connect Yandex Calendar via CalDAV with app-specific password."""
-    import caldav
+    import asyncio
 
-    # Test CalDAV connection
+    import caldav
+    from caldav.lib.error import AuthorizationError
+
+    # Test CalDAV connection using asyncio.to_thread()
     try:
-        client = caldav.DAVClient(
-            url="https://caldav.yandex.ru",
-            username=request.email,
-            password=request.app_password,
-        )
-        principal = client.principal()
-        calendars = principal.calendars()
+        def test_connection():
+            client = caldav.DAVClient(
+                url="https://caldav.yandex.ru",
+                username=request.email,
+                password=request.app_password,
+            )
+            principal = client.principal()
+            return principal.calendars()
+
+        calendars = await asyncio.to_thread(test_connection)
         logger.info(f"Connected to Yandex Calendar: {len(calendars)} calendars found")
+
+    except AuthorizationError as e:
+        logger.error(f"Yandex Calendar auth failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication failed. Check login and app-specific password.",
+        )
     except Exception as e:
         logger.error(f"Yandex Calendar connection failed: {e}")
         raise HTTPException(

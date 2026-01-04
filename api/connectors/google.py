@@ -1,8 +1,14 @@
 """
 Google Calendar connector implementation.
+
+Features:
+- Proactive token refresh (5-minute buffer)
+- FreeBusy API for efficient conflict detection
+- Google Meet integration
 """
 
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -15,6 +21,7 @@ from api.connectors.base import (
     EventCreate,
     TimeSlot,
 )
+from api.utils.token_manager import TOKEN_REFRESH_BUFFER, is_token_expired
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +40,24 @@ class GoogleCalendarConnector(CalendarConnector):
         Initialize with OAuth tokens.
 
         Args:
-            credentials: Dict with access_token, refresh_token, etc.
+            credentials: Dict with access_token, refresh_token, expires_at, etc.
         """
         super().__init__(credentials)
         self.access_token = credentials.get("access_token")
-        self.refresh_token = credentials.get("refresh_token")
+        self.refresh_token_value = credentials.get("refresh_token")
+        self.expires_at = credentials.get("expires_at")
+
+    async def _ensure_valid_token(self) -> None:
+        """
+        Ensure token is valid, refresh proactively if needed.
+
+        Uses 5-minute buffer before expiration to prevent race conditions.
+        """
+        if is_token_expired(self.credentials, TOKEN_REFRESH_BUFFER):
+            logger.info("Token expired or expiring soon, refreshing...")
+            new_creds = await self.refresh_token()
+            self.access_token = new_creds["access_token"]
+            self.expires_at = new_creds.get("expires_at")
 
     async def _request(
         self,
@@ -46,6 +66,9 @@ class GoogleCalendarConnector(CalendarConnector):
         **kwargs,
     ) -> dict:
         """Make authenticated request to Google Calendar API."""
+        # Proactive token refresh
+        await self._ensure_valid_token()
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -60,8 +83,21 @@ class GoogleCalendarConnector(CalendarConnector):
             )
 
             if response.status_code == 401:
-                # Token expired, need refresh
-                raise TokenExpiredError("Access token expired")
+                # Token expired despite proactive check, retry once
+                logger.warning("Token expired, refreshing and retrying...")
+                new_creds = await self.refresh_token()
+                self.access_token = new_creds["access_token"]
+
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                response = await client.request(
+                    method,
+                    f"{self.BASE_URL}{endpoint}",
+                    headers=headers,
+                    **kwargs,
+                )
+
+                if response.status_code == 401:
+                    raise TokenExpiredError("Access token expired after refresh")
 
             response.raise_for_status()
             return response.json() if response.content else {}
@@ -87,7 +123,7 @@ class GoogleCalendarConnector(CalendarConnector):
                 data={
                     "client_id": settings.google_client_id,
                     "client_secret": settings.google_client_secret,
-                    "refresh_token": self.refresh_token,
+                    "refresh_token": self.refresh_token_value,
                     "grant_type": "refresh_token",
                 },
             )
@@ -96,10 +132,20 @@ class GoogleCalendarConnector(CalendarConnector):
                 raise TokenRefreshError(f"Failed to refresh token: {response.text}")
 
             tokens = response.json()
-            # Update internal token
+
+            # Add expiration timestamp
+            if "expires_in" in tokens:
+                tokens["expires_at"] = time.time() + tokens["expires_in"]
+
+            # Preserve refresh token if not returned
+            if "refresh_token" not in tokens:
+                tokens["refresh_token"] = self.refresh_token_value
+
+            # Update internal state
             self.access_token = tokens["access_token"]
-            # Merge with existing credentials
+            self.expires_at = tokens.get("expires_at")
             self.credentials.update(tokens)
+
             return self.credentials
 
     async def list_calendars(self) -> list[Calendar]:
@@ -225,59 +271,188 @@ class GoogleCalendarConnector(CalendarConnector):
 
         return events
 
+    async def get_freebusy(
+        self,
+        calendar_ids: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, list[dict]]:
+        """
+        Query FreeBusy API for multiple calendars.
+
+        More efficient than listing all events when only need busy/free status.
+
+        Args:
+            calendar_ids: List of calendar IDs to query
+            start: Start of time range
+            end: End of time range
+
+        Returns:
+            Dict mapping calendar_id to list of busy periods
+        """
+        body = {
+            "timeMin": start.isoformat() + "Z",
+            "timeMax": end.isoformat() + "Z",
+            "items": [{"id": cal_id} for cal_id in calendar_ids],
+        }
+
+        data = await self._request(
+            "POST",
+            "/freeBusy",
+            json=body,
+        )
+
+        result = {}
+        calendars = data.get("calendars", {})
+        for cal_id in calendar_ids:
+            cal_data = calendars.get(cal_id, {})
+            busy_periods = cal_data.get("busy", [])
+            result[cal_id] = busy_periods
+
+        return result
+
     async def get_free_slots(
         self,
         calendar_id: str,
         start: datetime,
         end: datetime,
         duration_minutes: int = 60,
+        max_per_day: int = 3,
+        max_total: int = 10,
     ) -> list[TimeSlot]:
-        """Find free time slots in a calendar."""
-        events = await self.list_events(calendar_id, start, end)
+        """
+        Find free time slots using FreeBusy API.
 
-        # Sort events by start time
-        events.sort(key=lambda e: e.start)
+        Uses efficient gap analysis algorithm with constraints.
 
+        Args:
+            calendar_id: Calendar to check
+            start: Start of search range
+            end: End of search range
+            duration_minutes: Minimum slot duration
+            max_per_day: Maximum slots per day
+            max_total: Maximum total slots
+
+        Returns:
+            List of available time slots
+        """
+        # Use FreeBusy API for efficiency
+        freebusy = await self.get_freebusy([calendar_id], start, end)
+        busy_periods = freebusy.get(calendar_id, [])
+
+        # Merge overlapping busy periods (stack-based algorithm)
+        merged = self._merge_busy_periods(busy_periods)
+
+        # Find gaps using sliding window
         free_slots = []
         current = start
+        current_day = start.date()
+        day_count = 0
 
-        for event in events:
-            if event.start > current:
-                slot_duration = (event.start - current).total_seconds() / 60
-                if slot_duration >= duration_minutes:
-                    free_slots.append(TimeSlot(start=current, end=event.start))
-            current = max(current, event.end)
+        for busy in merged:
+            busy_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
+            busy_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
 
-        # Check for free time after last event
-        if current < end:
-            slot_duration = (end - current).total_seconds() / 60
-            if slot_duration >= duration_minutes:
+            # Check gap before busy period
+            if busy_start > current:
+                gap_minutes = (busy_start - current).total_seconds() / 60
+                if gap_minutes >= duration_minutes:
+                    # Check day limit
+                    slot_day = current.date()
+                    if slot_day != current_day:
+                        current_day = slot_day
+                        day_count = 0
+
+                    if day_count < max_per_day and len(free_slots) < max_total:
+                        free_slots.append(TimeSlot(start=current, end=busy_start))
+                        day_count += 1
+
+            current = max(current, busy_end)
+
+        # Check gap after last busy period
+        if current < end and len(free_slots) < max_total:
+            gap_minutes = (end - current).total_seconds() / 60
+            if gap_minutes >= duration_minutes:
                 free_slots.append(TimeSlot(start=current, end=end))
 
-        return free_slots
+        return free_slots[:max_total]
+
+    def _merge_busy_periods(self, busy_periods: list[dict]) -> list[dict]:
+        """
+        Merge overlapping busy periods using stack algorithm.
+
+        From AI_for_Scheduling pattern.
+        """
+        if not busy_periods:
+            return []
+
+        # Sort by start time
+        sorted_periods = sorted(busy_periods, key=lambda x: x["start"])
+
+        merged = [sorted_periods[0]]
+
+        for period in sorted_periods[1:]:
+            top = merged[-1]
+
+            # Check overlap
+            if period["start"] <= top["end"]:
+                # Extend if current ends later
+                if period["end"] > top["end"]:
+                    merged[-1] = {"start": top["start"], "end": period["end"]}
+            else:
+                merged.append(period)
+
+        return merged
 
     async def check_conflicts(
         self, calendar_id: str, start: datetime, end: datetime
     ) -> list[Event]:
-        """Check for conflicting events in a time range."""
-        events = await self.list_events(calendar_id, start, end)
+        """
+        Check for conflicting events using FreeBusy API.
 
-        conflicts = []
-        for event in events:
-            # Check if event overlaps with the proposed time
-            if event.start < end and event.end > start:
-                conflicts.append(event)
+        More efficient than listing all events.
+        """
+        freebusy = await self.get_freebusy([calendar_id], start, end)
+        busy_periods = freebusy.get(calendar_id, [])
+
+        # For detailed conflict info, fetch actual events
+        if busy_periods:
+            return await self.list_events(calendar_id, start, end)
+
+        return []
+
+    async def check_multi_calendar_conflicts(
+        self,
+        calendar_ids: list[str],
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, bool]:
+        """
+        Check conflicts across multiple calendars efficiently.
+
+        Args:
+            calendar_ids: List of calendar IDs to check
+            start: Proposed event start
+            end: Proposed event end
+
+        Returns:
+            Dict mapping calendar_id to conflict status (True = has conflict)
+        """
+        freebusy = await self.get_freebusy(calendar_ids, start, end)
+
+        conflicts = {}
+        for cal_id in calendar_ids:
+            busy_periods = freebusy.get(cal_id, [])
+            conflicts[cal_id] = len(busy_periods) > 0
 
         return conflicts
 
 
 class TokenExpiredError(Exception):
     """Raised when access token is expired."""
-
     pass
 
 
 class TokenRefreshError(Exception):
     """Raised when token refresh fails."""
-
     pass

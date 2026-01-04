@@ -6,9 +6,18 @@ Yandex Calendar provides CalDAV access at:
 - Principal: /calendars/users/{username}
 
 Authentication uses app-specific passwords (2FA required on account).
+
+Features:
+- asyncio.to_thread() for CalDAV operations
+- X-TELEMOST-CONFERENCE parsing for existing events
+- RECURRENCE-ID handling for recurring events
+- Text field truncation (255 char limit)
+- Sorted date_search results
 """
 
+import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -25,15 +34,35 @@ from api.connectors.base import (
 
 logger = logging.getLogger(__name__)
 
+# CalDAV field limits
+MAX_SUMMARY_LENGTH = 255
+MAX_LOCATION_LENGTH = 255
+MAX_DESCRIPTION_LENGTH = 2000
+
+
+def truncate_field(value: str, max_length: int) -> str:
+    """Truncate field to max length, preserving word boundaries."""
+    if not value or len(value) <= max_length:
+        return value
+    truncated = value[:max_length - 3]
+    last_space = truncated.rfind(' ')
+    if last_space > max_length // 2:
+        truncated = truncated[:last_space]
+    return truncated + "..."
+
 
 class YandexCalendarConnector(CalendarConnector):
     """
     Yandex Calendar connector using CalDAV.
 
-    Similar to Apple Calendar but with Yandex-specific URLs.
+    Features:
+    - X-TELEMOST-CONFERENCE parsing for Yandex video links
+    - RECURRENCE-ID handling for recurring events
+    - Proper field truncation
     """
 
     CALDAV_URL = "https://caldav.yandex.ru"
+    TELEMOST_REGEX = re.compile(r'https://telemost\.yandex\.ru/j/\d+')
 
     def __init__(self, credentials: dict):
         """
@@ -49,11 +78,8 @@ class YandexCalendarConnector(CalendarConnector):
         self._principal = None
 
     async def _get_client(self) -> caldav.DAVClient:
-        """Get or create CalDAV client."""
+        """Get or create CalDAV client using asyncio.to_thread()."""
         if self._client is None:
-            # Run in thread pool since caldav is synchronous
-            import asyncio
-
             def create_client():
                 return caldav.DAVClient(
                     url=self.CALDAV_URL,
@@ -61,23 +87,19 @@ class YandexCalendarConnector(CalendarConnector):
                     password=self.password,
                 )
 
-            loop = asyncio.get_event_loop()
-            self._client = await loop.run_in_executor(None, create_client)
+            self._client = await asyncio.to_thread(create_client)
 
         return self._client
 
     async def _get_principal(self) -> caldav.Principal:
-        """Get CalDAV principal."""
+        """Get CalDAV principal using asyncio.to_thread()."""
         if self._principal is None:
-            import asyncio
-
             client = await self._get_client()
 
             def get_principal():
                 return client.principal()
 
-            loop = asyncio.get_event_loop()
-            self._principal = await loop.run_in_executor(None, get_principal)
+            self._principal = await asyncio.to_thread(get_principal)
 
         return self._principal
 
@@ -96,15 +118,12 @@ class YandexCalendarConnector(CalendarConnector):
 
     async def list_calendars(self) -> list[Calendar]:
         """List all calendars for the user."""
-        import asyncio
-
         principal = await self._get_principal()
 
         def get_calendars():
             return principal.calendars()
 
-        loop = asyncio.get_event_loop()
-        caldav_calendars = await loop.run_in_executor(None, get_calendars)
+        caldav_calendars = await asyncio.to_thread(get_calendars)
 
         calendars = []
         for i, cal in enumerate(caldav_calendars):
@@ -136,10 +155,14 @@ class YandexCalendarConnector(CalendarConnector):
         Returns:
             Created event.
         """
-        import asyncio
         import uuid
 
         client = await self._get_client()
+
+        # Truncate fields to CalDAV limits
+        title = truncate_field(event.title, MAX_SUMMARY_LENGTH)
+        location = truncate_field(event.location, MAX_LOCATION_LENGTH) if event.location else None
+        description = truncate_field(event.description, MAX_DESCRIPTION_LENGTH) if event.description else None
 
         # Build iCalendar event
         vevent = f"""BEGIN:VCALENDAR
@@ -150,23 +173,22 @@ UID:{uuid.uuid4()}
 DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}
 DTSTART:{event.start.strftime('%Y%m%dT%H%M%SZ')}
 DTEND:{event.end.strftime('%Y%m%dT%H%M%SZ')}
-SUMMARY:{event.title}
+SUMMARY:{title}
 """
 
-        if event.location:
-            vevent += f"LOCATION:{event.location}\n"
-        if event.description:
-            vevent += f"DESCRIPTION:{event.description}\n"
+        if location:
+            vevent += f"LOCATION:{location}\n"
+        if description:
+            vevent += f"DESCRIPTION:{description}\n"
 
         # Add Telemost link if requested
         telemost_link = None
         if add_telemost:
-            # Yandex Telemost links are generated separately
-            # For now, add placeholder that user needs to create manually
             telemost_link = await self._create_telemost_link(event.title, event.start)
             if telemost_link:
-                vevent += f"LOCATION:{telemost_link}\n"
-                vevent += f"DESCRIPTION:Telemost: {telemost_link}\n"
+                vevent += f"X-TELEMOST-CONFERENCE:{telemost_link}\n"
+                if not location:
+                    vevent += f"LOCATION:{telemost_link}\n"
 
         vevent += "END:VEVENT\nEND:VCALENDAR"
 
@@ -174,16 +196,15 @@ SUMMARY:{event.title}
             calendar = caldav.Calendar(client=client, url=calendar_id)
             return calendar.save_event(vevent)
 
-        loop = asyncio.get_event_loop()
-        created = await loop.run_in_executor(None, add_event)
+        created = await asyncio.to_thread(add_event)
 
         return Event(
             id=str(created.url),
-            title=event.title,
+            title=title,
             start=event.start,
             end=event.end,
-            location=event.location or telemost_link,
-            description=event.description,
+            location=location or telemost_link,
+            description=description,
             calendar_id=calendar_id,
             conference_link=telemost_link,
         )
@@ -208,9 +229,14 @@ SUMMARY:{event.title}
     async def list_events(
         self, calendar_id: str, start: datetime, end: datetime
     ) -> list[Event]:
-        """List events in a calendar within a time range."""
-        import asyncio
+        """
+        List events in a calendar within a time range.
 
+        Features:
+        - X-TELEMOST-CONFERENCE parsing for Yandex video links
+        - RECURRENCE-ID handling for recurring events
+        - sort_keys=['dtstart'] for proper ordering
+        """
         client = await self._get_client()
 
         def get_events():
@@ -219,16 +245,26 @@ SUMMARY:{event.title}
                 start=start,
                 end=end,
                 expand=True,
-                event=True,  # Explicitly request events (some servers require this)
+                sort_keys=['dtstart'],  # Sort by start time
             )
 
-        loop = asyncio.get_event_loop()
-        caldav_events = await loop.run_in_executor(None, get_events)
+        caldav_events = await asyncio.to_thread(get_events)
 
         events = []
+        seen_recurrence_ids = set()  # Track RECURRENCE-ID to avoid duplicates
+
         for e in caldav_events:
             try:
                 vevent = e.vobject_instance.vevent
+
+                # Handle RECURRENCE-ID for recurring events (mm-yc-notify pattern)
+                recurrence_id = None
+                if hasattr(vevent, 'recurrence_id'):
+                    recurrence_id = str(vevent.recurrence_id.value)
+                    event_key = f"{e.url}_{recurrence_id}"
+                    if event_key in seen_recurrence_ids:
+                        continue  # Skip duplicate instance
+                    seen_recurrence_ids.add(event_key)
 
                 event_start = vevent.dtstart.value
                 event_end = vevent.dtend.value if hasattr(vevent, "dtend") else None
@@ -241,6 +277,20 @@ SUMMARY:{event.title}
                 if not event_end:
                     event_end = event_start + timedelta(hours=1)
 
+                # Extract Telemost conference link (X-TELEMOST-CONFERENCE)
+                conference_link = None
+                raw_data = e.data if hasattr(e, 'data') else str(e.vobject_instance.serialize())
+
+                # Try X-TELEMOST-CONFERENCE property first
+                telemost_match = re.search(r'X-TELEMOST-CONFERENCE[^:]*:(.+)', raw_data)
+                if telemost_match:
+                    conference_link = telemost_match.group(1).strip()
+                else:
+                    # Fallback: search in location/description for Telemost URL
+                    telemost_url = self.TELEMOST_REGEX.search(raw_data)
+                    if telemost_url:
+                        conference_link = telemost_url.group(0)
+
                 events.append(
                     Event(
                         id=str(e.url),
@@ -250,6 +300,7 @@ SUMMARY:{event.title}
                         location=str(vevent.location.value) if hasattr(vevent, "location") else None,
                         description=str(vevent.description.value) if hasattr(vevent, "description") else None,
                         calendar_id=calendar_id,
+                        conference_link=conference_link,
                     )
                 )
             except Exception as ex:
