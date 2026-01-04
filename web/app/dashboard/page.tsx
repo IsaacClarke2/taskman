@@ -25,6 +25,8 @@ interface IntegrationStatus {
   outlook?: Integration
   apple_calendar?: Integration
   notion?: Integration
+  zoom?: Integration
+  yandex_calendar?: Integration
 }
 
 export default function Dashboard() {
@@ -118,6 +120,16 @@ export default function Dashboard() {
                 name="Notion"
                 status={integrations.notion?.is_active ? 'connected' : 'not_connected'}
                 href="/integrations/notion"
+              />
+              <IntegrationCard
+                name="Zoom"
+                status={integrations.zoom?.is_active ? 'connected' : 'not_connected'}
+                href="/integrations/zoom"
+              />
+              <IntegrationCard
+                name="Yandex Calendar"
+                status={integrations.yandex_calendar?.is_active ? 'connected' : 'not_connected'}
+                href="/integrations/yandex"
               />
             </div>
           </div>
