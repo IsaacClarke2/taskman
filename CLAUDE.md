@@ -21,7 +21,7 @@ AI-powered Telegram bot that captures voice messages, text, and forwarded messag
 - **Frontend:** Next.js 14 (App Router)
 - **Database:** PostgreSQL 15
 - **Cache/Queue:** Redis + arq
-- **AI:** OpenAI Whisper API + GPT-4o-mini
+- **AI:** OpenAI Whisper API + GPT-5-mini
 - **Containers:** Docker + docker-compose
 
 ### Project Structure
@@ -168,10 +168,10 @@ See `docs/PROJECT_STATUS.md` for current milestone and tasks.
 
 1. **Response Time:** Telegram handler must respond within 3 seconds. Use background jobs for slow operations.
 
-2. **Token Limits:** GPT-4o-mini context is 128k tokens. Keep parsing prompts under 2k tokens.
+2. **Token Limits:** GPT-5-mini context is 128k tokens. Keep parsing prompts under 2k tokens.
 
 3. **Rate Limits:** 
-   - OpenAI: 500 RPM for GPT-4o-mini
+   - OpenAI: check current rate limits for GPT-5-mini at platform.openai.com
    - Google Calendar: 1M queries/day
    - Respect Telegram flood limits
 

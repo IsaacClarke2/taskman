@@ -291,9 +291,10 @@ Rules:
 - Return ONLY JSON, no markdown, no explanation
 ```
 
-**API:** OpenAI Chat Completions
+**API:** OpenAI Responses API (новый) или Chat Completions
 **Документация:** https://platform.openai.com/docs/guides/text-generation
-**Модель:** `gpt-4o-mini` (дешёвый и быстрый)
+**Модель:** `gpt-5-mini` (дешёвый и быстрый, $0.25/1M input, $2/1M output)
+**Альтернатива:** `gpt-5-nano` ещё дешевле ($0.05/1M input) для простых задач
 
 ---
 

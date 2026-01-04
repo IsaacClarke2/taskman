@@ -39,9 +39,16 @@
 | openai | https://platform.openai.com/docs/libraries/python-library | https://pypi.org/project/openai/ |
 
 **API Docs:**
+- Models Overview: https://platform.openai.com/docs/models
+- Responses API (новый): https://platform.openai.com/docs/api-reference/responses
 - Chat Completions: https://platform.openai.com/docs/guides/text-generation
 - Whisper (Speech-to-Text): https://platform.openai.com/docs/guides/speech-to-text
-- Models: https://platform.openai.com/docs/models
+
+**Актуальные модели (январь 2026):**
+- `gpt-5.2` — flagship, самая умная
+- `gpt-5-mini` — рекомендуется для парсинга ($0.25/1M input)
+- `gpt-5-nano` — самая дешёвая ($0.05/1M input)
+- `whisper-1` — speech-to-text
 
 ### Google APIs
 
@@ -138,7 +145,7 @@
 - **Base URL:** `https://api.openai.com/v1`
 - **Docs:** https://platform.openai.com/docs/api-reference
 - **Models:** 
-  - Chat: `gpt-4o-mini` (рекомендуется для парсинга)
+  - Text: `gpt-5-mini` (рекомендуется для парсинга), `gpt-5-nano` (ещё дешевле)
   - Speech-to-Text: `whisper-1`
 
 ### Google Calendar API

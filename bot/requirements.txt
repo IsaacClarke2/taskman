@@ -1,0 +1,17 @@
+# Telegram Bot Requirements
+# Generated for modular builds
+
+# Telegram Bot Framework
+aiogram>=3.3.0
+
+# HTTP Client (for API calls)
+httpx>=0.26.0
+
+# Redis (for caching)
+redis>=5.0.1
+
+# Utils
+pydantic>=2.5.3
+pydantic-settings>=2.1.0
+python-dateutil>=2.8.2
+pytz>=2024.1

@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build output
+.next/
+out/
+build/
+
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Misc
+.DS_Store
+*.md
